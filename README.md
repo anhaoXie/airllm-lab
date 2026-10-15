@@ -68,7 +68,8 @@ python -m venv .venv
 | [`run_airllm.py`](run_airllm.py) | 推理入口。修掉了官方示例在无 CUDA 机器上会崩的两处问题 |
 | [`airllm_env.ps1`](airllm_env.ps1) | 环境变量（HF 镜像、缓存路径、线程数等） |
 | [`cloud_setup.sh`](cloud_setup.sh) | 云实例一键部署脚本（检测数据盘 → 开加速 → 装依赖 → 冒烟测试） |
-| [`tools/gh_relay.py`](tools/gh_relay.py) | 见下方「已知问题」——绕过被污染 hosts 的 GitHub 中继 |
+| [`tools/gh_relay.py`](tools/gh_relay.py) | 见下方「已知问题」——补上 Steam++ 缺失的 443 监听，让 GitHub 恢复可用 |
+| [`tools/start_relay.bat`](tools/start_relay.bat) | 上面那个中继的一键启动器（双击即可） |
 
 ---
 
@@ -90,34 +91,55 @@ python -m venv .venv
 
 → 缓解：加 `--delete-original` 删掉原始权重，或者开启 Windows 开发者模式。
 
-### Steam++ 遗留的 hosts 屏蔽会导致 GitHub / HuggingFace 完全不可达
+### Steam++ 的 hosts 屏蔽 + 它自己坏掉的加速器 → GitHub/HuggingFace 全灭
 
-如果你装过 Steam++（现叫 Watt Toolkit）后来卸载了，它写入 `C:\Windows\System32\drivers\etc\hosts`
-的屏蔽块会残留：把 `github.com`、`api.github.com`、`raw.githubusercontent.com`、`huggingface.co`
-等域名全部指向 `127.0.0.1`，而此时它的本地代理已不再运行 → 这些域名全部变成死地址。
+这是本项目排查最久、最反直觉的一个坑。现象是 `github.com` 完全打不开，看着像被墙。
+
+**实际机制**：装着 Steam++（现叫 Watt Toolkit）时，它会在
+`C:\Windows\System32\drivers\etc\hosts` 写入一个屏蔽块，把 47 个域名（GitHub 全家、
+`huggingface.co`、`hub.docker.com`、Steam 社区等）指向 `127.0.0.1`，
+指望自己的本地反向代理在 **443** 端口接住并解密转发（它确实往系统里装了
+`CN=SteamTools Certificate, O=BeyondDimension` 的根证书，就是干这个的）。
+
+**但它实测没接住**：`Steam++.Accelerator.exe` 只监听了 **80 和 444** 端口，**443 无人监听**。
+于是这 47 个域名全部指向一个没人应答的端口 → 全部变成死地址。
+换句话说：**即使 Steam++ 正在运行，这个屏蔽也是纯有害的。**
 
 判断方法：
 
 ```powershell
-Resolve-DnsName github.com -Type A     # 若返回 127.0.0.1 即中招
+Resolve-DnsName github.com -Type A                                          # 返回 127.0.0.1 即中招
+Get-NetTCPConnection -State Listen | Where-Object LocalPort -in 80,443,444  # 看谁在听哪个端口
 ```
+
+**注意**：`huggingface.co` 是**额外**真有 GFW 封锁的（换任何真实 IP 直连都是 TLS 重置或超时），
+所以它必须走镜像，别指望中继能救。GitHub 没被墙，只是被这个坏 hosts 拖累。
 
 两种解法：
 
 ```powershell
-# 解法一（推荐，需管理员）：删掉 hosts 里 "# Steam++ Start" 到 "# Steam++ End" 之间的行
+# 解法一（根治）：退出 Steam++（或在它界面里关掉"网络加速"），
+#                 然后删掉 hosts 里 "# Steam++ Start" 到 "# Steam++ End" 之间的行
+#                 （需管理员；注意 Steam++ 运行时会实时把改动写回去，所以必须先退出它）
 notepad C:\Windows\System32\drivers\etc\hosts
 ipconfig /flushdns
 
-# 解法二（无需管理员，临时）：跑 tools/gh_relay.py，它按 TLS SNI 分流到真实 IP
-python tools/gh_relay.py
+# 解法二（无需管理员，不改系统文件）：跑 tools/gh_relay.py 补上那个缺失的 443 监听
+#                 双击 tools\start_relay.bat 即可
 ```
 
 `tools/gh_relay.py` 在 `127.0.0.1:443` 监听，读出 TLS ClientHello 里的 SNI，再连到该域名的真实 IP
-并把字节原样双向转发——SNI 原样透传，所以证书校验照常通过。它**不改任何系统文件，关掉即恢复原状**。
+并把字节原样双向转发——SNI 原样透传，所以证书校验照常通过。它**不改任何系统文件，关掉即恢复原状**，
+而且和 Steam++ 的 hosts 条目天然互补（那些条目说"去 127.0.0.1"，中继正好在那儿接住）。
 
-> 注意：GitHub 的部分 IP 在本网络会被 SNI 阻断（TCP 能连上，但 TLS 握手被丢弃）。
-> 该脚本内置候选 IP 列表 + 故障转移，靠"能否收到 ServerHello"来判断某个 IP 是否可用。
+> **两个实测出来的坑**：
+> 1. GitHub 的部分 IP 在本网络会被 SNI 阻断（TCP 能连上，但 TLS 握手被丢弃）。
+>    实测可用：`140.82.113.3` / `140.82.114.3` / `140.82.116.3` / `140.82.121.3` / `20.27.177.113` / `4.208.26.197`；
+>    不可用：`140.82.112.4`、`20.205.243.166`。脚本内置候选列表 + 故障转移，
+>    靠"能否收到 ServerHello"判断某个 IP 是否可用。
+> 2. 脚本必须**拒绝回环地址**：hosts 里那些未被路由的域名（如 `store.steampowered.com`）
+>    解析后仍是 `127.0.0.1`，若直连就会打到中继自己，每层再开一个连接，**无限递归**。
+
 
 ---
 

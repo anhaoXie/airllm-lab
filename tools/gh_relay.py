@@ -51,7 +51,10 @@ ROUTES = {
     "raw.github.com": ["185.199.108.133", "185.199.109.133"],
     "gist.githubusercontent.com": ["185.199.108.133", "185.199.109.133"],
     "github.io": ["185.199.108.153", "185.199.109.153"],
-    "huggingface.co": ["3.161.55.71", "3.161.55.100"],
+    # huggingface.co 是真正被 GFW 封锁的 (换任何真实 IP 都是 TLS 重置/超时),
+    # 这里保留条目只为让连接"快速失败"而不是无限重试。
+    # 正确做法是用镜像: 设 HF_ENDPOINT=https://hf-mirror.com (本项目已配置)。
+    "huggingface.co": ["159.106.121.75"],
 }
 
 LOG_PATH = os.environ.get("RELAY_LOG", "")
@@ -183,6 +186,12 @@ def handle(client):
                                           proto=socket.IPPROTO_TCP)[0][4][0]]
             except Exception as e:
                 log("#%d %s cannot resolve: %s" % (cid, sni, e))
+                return
+            # 防自环: hosts 里被 Steam++ 指向 127.0.0.1 但本中继未路由的域名,
+            # 解析出来还是 127.0.0.1; 若直连就会打到中继自己, 每层再开一个连接,
+            # 无限递归。这里直接拒绝, 让调用方快速失败。
+            if any(ip.startswith("127.") or ip in ("::1", "0.0.0.0") for ip in ips):
+                log("#%d %s -> loopback (hosts-poisoned & un-routed), refusing" % (cid, sni))
                 return
         t0 = time.time()
         upstream, ip, first = connect_upstream(head, ips)
