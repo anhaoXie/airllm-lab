@@ -1,0 +1,35 @@
+# ===== 虚拟环境 =====
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ===== 模型缓存与切片（GB 级，绝不入库）=====
+hf-cache/
+splitted_model/
+*.safetensors
+*.bin
+*.gguf
+*.pth
+*.ckpt
+
+# ===== 第三方源码 / 安装包解包 =====
+_src/
+_pkg/
+_pkg_dl/
+
+# ===== 本机临时工作目录 =====
+_tools/
+
+# ===== 运行时产物与日志 =====
+*.log
+relay.log
+~$*
+*.tmp
+
+# ===== 系统垃圾 =====
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -1,0 +1,24 @@
+# 默认文本归一化为 LF
+* text=auto eol=lf
+
+# Windows 批处理：禁止任何换行符转换，仓库里原样保存 CRLF。
+# 这点很重要 —— 用 LF 存的 .bat 被 cmd.exe 解析时会把变量名截断
+# （本项目实际踩过：%HF_HUB_DISABLE_XET% 被解析成 'LE_XET'）。
+# 同时也保证从 GitHub 直接下载 raw 文件拿到的就是可用的 CRLF 版本。
+*.bat  -text
+*.cmd  -text
+
+# PowerShell：检出为 CRLF
+*.ps1  text eol=crlf
+
+# Linux 脚本：LF
+*.sh   text eol=lf
+
+# 二进制
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+*.zip  binary
+*.safetensors binary
+*.bin  binary
