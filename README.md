@@ -91,13 +91,13 @@ python -m venv .venv
 
 → 缓解：加 `--delete-original` 删掉原始权重，或者开启 Windows 开发者模式。
 
-### Steam++ 的 hosts 屏蔽 + 它自己坏掉的加速器 → GitHub/HuggingFace 全灭
+### Steam++ 的 hosts 屏蔽 + 加速器卡死 → GitHub 全灭（重启 Steam++ 即恢复）
 
-> **2026-10-17 已根治。** 处理经过：退出 Steam++ 三件套（`Steam++.exe` ×2 +
-> `Steam++.Accelerator.exe`，它以管理员权限运行，必须先提权才能杀）→ 把 hosts 恢复成
-> Windows 出厂状态（836 B / 21 行 / 0 条重定向）→ `ipconfig /flushdns`。
-> 结果：GitHub 纯直连可用（`api.github.com` 0.43s、`github.com` 1.50s、`git ls-remote` 1.18s），
-> **中继不再需要**。
+> **2026-10-17 定位到真因：不是它天生坏，而是它的加速器会「卡死」。**
+> 卡死时 `Steam++.Accelerator.exe` 不监听 443，它写的 47 条 hosts 就全指到死端口 → GitHub 全灭。
+> **退出 Steam++ 再重新打开**（或杀掉三个 `Steam++*` 进程后重开）即可恢复：重启后 443 恢复监听，
+> 实测 `github.com` HTTP 200 1.19s、`api.github.com` 200 0.21s、`git push` 成功。
+> 所以遇到「GitHub 突然全打不开」时，**先重启 Steam++**，别急着重装或怀疑被墙。
 >
 > 两个踩过的坑记在这：
 > 1. **`Set-Content -LiteralPath` 在这台机器上会静默失败**（`$ErrorActionPreference='Continue'`
@@ -107,7 +107,8 @@ python -m venv .venv
 >    按 GBK 解码，中文字符串里的字节会吃掉引号 → 解析报错。`pwsh`(PS7) 才默认识 UTF-8 无 BOM。
 >
 > 另外确认：**火绒（Huorong）没拦 hosts**，它的 ACL 也允许管理员写（`BUILTIN\Administrators`
-> 是 FullControl）；Steam++ **没有开机自启**，所以修完不会自己回来。
+> 是 FullControl）。hosts 写不进去纯粹是上面第 1 条那个工具问题。
+> 注意 Steam++ 运行时会**实时把 hosts 写回自己的版本**，所以要改 hosts 必须先退出它。
 
 这是本项目排查最久、最反直觉的一个坑。现象是 `github.com` 完全打不开，看着像被墙。
 
@@ -117,9 +118,9 @@ python -m venv .venv
 指望自己的本地反向代理在 **443** 端口接住并解密转发（它确实往系统里装了
 `CN=SteamTools Certificate, O=BeyondDimension` 的根证书，就是干这个的）。
 
-**但它实测没接住**：`Steam++.Accelerator.exe` 只监听了 **80 和 444** 端口，**443 无人监听**。
-于是这 47 个域名全部指向一个没人应答的端口 → 全部变成死地址。
-换句话说：**即使 Steam++ 正在运行，这个屏蔽也是纯有害的。**
+**它会卡死**：正常时 `Steam++.Accelerator.exe` 监听 80/443/444；一旦卡死，**443 就没人监听**。
+此时这 47 个域名全部指向一个没人应答的端口 → 全部变成死地址，看起来就像被墙了。
+本机遇到过两次这个故障，**重启 Steam++ 即恢复**。
 
 判断方法：
 
@@ -134,14 +135,19 @@ Get-NetTCPConnection -State Listen | Where-Object LocalPort -in 80,443,444  # �
 两种解法：
 
 ```powershell
-# 解法一（根治）：退出 Steam++（或在它界面里关掉"网络加速"），
-#                 然后删掉 hosts 里 "# Steam++ Start" 到 "# Steam++ End" 之间的行
-#                 （需管理员；注意 Steam++ 运行时会实时把改动写回去，所以必须先退出它）
-notepad C:\Windows\System32\drivers\etc\hosts
-ipconfig /flushdns
+# 解法一（最省事）：重启 Steam++ —— 退出后重新打开。
+#   恢复后 443 会被它自己的加速器接住, GitHub 立刻可用。
+#   验证: Get-NetTCPConnection -LocalPort 443 -State Listen
 
-# 解法二（无需管理员，不改系统文件）：跑 tools/gh_relay.py 补上那个缺失的 443 监听
-#                 双击 tools\start_relay.bat 即可
+# 解法二（不用 Steam++）：退出它, 再把 hosts 里 "# Steam++ Start" 到 "# Steam++ End"
+#   之间的行删掉, 然后 ipconfig /flushdns。
+#   注意两点:
+#     a) 它运行时会把 hosts 写回去, 必须先退干净 (三个进程都杀掉)
+#     b) 直连 github.com 在本网络是间歇性的 (TLS 握手常被丢),
+#        git push 这种长连接更容易断, 需要重试或改用解法三
+
+# 解法三（兜底, 不改系统文件）：跑 tools/gh_relay.py 补上 443 监听
+#   双击 tools\start_relay.bat 即可; 配合解法二留下的 hosts 条目使用
 ```
 
 `tools/gh_relay.py` 在 `127.0.0.1:443` 监听，读出 TLS ClientHello 里的 SNI，再连到该域名的真实 IP
