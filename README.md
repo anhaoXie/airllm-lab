@@ -93,6 +93,22 @@ python -m venv .venv
 
 ### Steam++ 的 hosts 屏蔽 + 它自己坏掉的加速器 → GitHub/HuggingFace 全灭
 
+> **2026-10-17 已根治。** 处理经过：退出 Steam++ 三件套（`Steam++.exe` ×2 +
+> `Steam++.Accelerator.exe`，它以管理员权限运行，必须先提权才能杀）→ 把 hosts 恢复成
+> Windows 出厂状态（836 B / 21 行 / 0 条重定向）→ `ipconfig /flushdns`。
+> 结果：GitHub 纯直连可用（`api.github.com` 0.43s、`github.com` 1.50s、`git ls-remote` 1.18s），
+> **中继不再需要**。
+>
+> 两个踩过的坑记在这：
+> 1. **`Set-Content -LiteralPath` 在这台机器上会静默失败**（`$ErrorActionPreference='Continue'`
+>    把异常吞了，表现是"报写入成功但文件没变"）。改用
+>    `[System.IO.File]::WriteAllLines($hp, [string[]]$lines, [System.Text.Encoding]::ASCII)` 才成功。
+> 2. **给 `powershell.exe`（5.1）的 .ps1 必须纯 ASCII**。UTF-8 无 BOM 的脚本在中文系统上会被
+>    按 GBK 解码，中文字符串里的字节会吃掉引号 → 解析报错。`pwsh`(PS7) 才默认识 UTF-8 无 BOM。
+>
+> 另外确认：**火绒（Huorong）没拦 hosts**，它的 ACL 也允许管理员写（`BUILTIN\Administrators`
+> 是 FullControl）；Steam++ **没有开机自启**，所以修完不会自己回来。
+
 这是本项目排查最久、最反直觉的一个坑。现象是 `github.com` 完全打不开，看着像被墙。
 
 **实际机制**：装着 Steam++（现叫 Watt Toolkit）时，它会在
