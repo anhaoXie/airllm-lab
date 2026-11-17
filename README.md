@@ -69,6 +69,7 @@ python -m venv .venv
 | [`airllm_env.ps1`](airllm_env.ps1) | 环境变量（HF 镜像、缓存路径、线程数等） |
 | [`cloud_setup.sh`](cloud_setup.sh) | 云实例一键部署脚本（检测数据盘 → 开加速 → 装依赖 → 冒烟测试） |
 | [`tools/gh_relay.py`](tools/gh_relay.py) | 见下方「已知问题」——补上 Steam++ 缺失的 443 监听，让 GitHub 恢复可用 |
+| [`tools/test_gh_relay.py`](tools/test_gh_relay.py) | gh_relay 的离线单测：SNI 解析、ServerHello 校验、候选排序与赢家过期 |
 | [`tools/start_relay.bat`](tools/start_relay.bat) | 上面那个中继的一键启动器（双击即可） |
 
 ---

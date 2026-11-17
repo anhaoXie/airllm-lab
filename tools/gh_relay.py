@@ -43,6 +43,7 @@ MAX_HELLO = 16384
 
 DNS_SERVERS = ["223.5.5.5", "119.29.29.29", "8.8.8.8"]
 DNS_CACHE_TTL = 300          # 秒
+WINNER_TTL = 600             # 秒：赢家 IP 也会随时间失效，过期后重新走候选顺序
 
 # 少数关键域名的优先候选（DNS 结果会追加在后面）。
 # 这些是实测在本网络比较抗 SNI 阻断的 GitHub 入口。
@@ -56,7 +57,7 @@ PREFERRED = {
 LOG_PATH = os.environ.get("RELAY_LOG", "")
 _plock = threading.Lock()
 _counter = [0]
-_winner = {}                  # host -> ip   上次成功的 IP
+_winner = {}                  # host -> (ip, ts)   上次成功的 IP 及时间
 _dns_cache = {}               # host -> (ts, [ip])
 _noise = {}                   # 用于日志限流
 
@@ -107,14 +108,21 @@ def dns_a(host):
     pkt = (struct.pack(">HHHHHH", qid, 0x0100, 1, 0, 0, 0)
            + _encode_name(host) + struct.pack(">HH", 1, 1))
     for srv in DNS_SERVERS:
+        s = None
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.settimeout(DNS_TIMEOUT)
             s.sendto(pkt, (srv, 53))
             data, _ = s.recvfrom(4096)
-            s.close()
         except Exception:
             continue
+        finally:
+            # 失败路径之前没有关 socket：长期运行、DNS 间歇超时时会漏 fd。
+            if s is not None:
+                try:
+                    s.close()
+                except Exception:
+                    pass
         if len(data) < 12:
             continue
         rid, flags, qd, an, _ns, _ar = struct.unpack(">HHHHHH", data[:12])
@@ -142,13 +150,19 @@ def dns_a(host):
 def candidates(host):
     """候选 IP：上次成功的排最前，其次优先列表，最后 DNS 结果。"""
     out = []
+    now = time.time()
     w = _winner.get(host)
     if w:
-        out.append(w)
+        ip, ts = w
+        if now - ts < WINNER_TTL:
+            out.append(ip)
+        else:
+            # 今天最快的 IP，明天可能已被阻断；不清掉的话每次连接都会先白等
+            # 一个 2.5 秒探测超时，才轮得到后面的候选。
+            _winner.pop(host, None)
     for ip in PREFERRED.get(host, []):
         if ip not in out:
             out.append(ip)
-    now = time.time()
     cached = _dns_cache.get(host)
     if cached and now - cached[0] < DNS_CACHE_TTL:
         ips = cached[1]
@@ -211,6 +225,11 @@ def parse_sni(data):
     return None
 
 
+def is_server_hello(buf):
+    """首包必须是 TLS handshake record，且 handshake type 是 ServerHello(0x02)。"""
+    return len(buf) >= 6 and buf[0] == 0x16 and buf[5] == 0x02
+
+
 def connect_upstream(host, head, ips):
     """依次试候选 IP；靠"能否收到 ServerHello"判断是否被阻断。"""
     last = "no candidate"
@@ -223,11 +242,18 @@ def connect_upstream(host, head, ips):
             up = socket.create_connection((ip, UPSTREAM_PORT), timeout=PROBE_TIMEOUT)
             up.sendall(head)
             up.settimeout(PROBE_TIMEOUT)
-            first = up.recv(65536)          # 期待 TLS ServerHello
-            if not first:
-                raise IOError("closed before ServerHello")
+            first = b""
+            while len(first) < 6:            # 只等到够判断 record/handshake 头
+                chunk = up.recv(65536)
+                if not chunk:
+                    raise IOError("closed before ServerHello")
+                first += chunk
+            if not is_server_hello(first):
+                # 有些阻断会回一个 TLS alert 或任意字节。旧实现把"任何非空首包"
+                # 都当成成功，于是把不可用的 IP 记成"赢家"，之后每次连接都先撞它。
+                raise IOError("not a ServerHello: %r" % first[:6])
             up.settimeout(None)
-            _winner[host] = ip
+            _winner[host] = (ip, time.time())
             return up, ip, first
         except Exception as e:
             last = "%s" % type(e).__name__
